@@ -68,46 +68,6 @@ class Brainfuck
     return
   end
 
-  # mem[ptr] += n
-  # assert mem[ptr+shift*x] == 0
-  def add(n = 1)
-    if n < 0
-      sub -n
-
-      return
-    end
-
-    self << ?+ * n
-
-    return
-  end
-
-  # mem[ptr] -= n
-  def sub(n = 1, s = 1)
-    if n < 0
-      add -n
-      
-      return
-    end
-    
-    self << ?- * n
-
-    return
-  end
-
-  # -- メモリ --
-  
-  # ptr += n
-  def shift(n)
-    if n > 0
-      self << ?> * n
-    elsif n < 0
-      self << ?< * -n
-    end
-
-    return
-  end
-
   # mem[ptr].times { mem[ptr] -= 1; yield }
   def repeat
     self << "[-"
