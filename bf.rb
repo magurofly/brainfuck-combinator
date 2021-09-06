@@ -264,6 +264,10 @@ class BrainMem
     def times(&block)
       @bm.times(self, &block)
     end
+
+    def if_nonzero(&block)
+      @bm.if_nonzero(self, &block)
+    end
   end
 
   def alloc(size = 1, base = @pointer)
