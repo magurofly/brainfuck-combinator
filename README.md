@@ -5,7 +5,8 @@
 ```bash
 $ irb -r ./bf.rb
 irb> b = BrainMem.new(false) # trueだと詳細な出力
-irb>
+irb> # コードを書く
+irb> puts b.bf.to_s # Brainfuckコードを出力
 ```
 
 ## 機能
