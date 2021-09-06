@@ -297,7 +297,7 @@ class BrainMem
       @bm.copy(dst, self, tmp)
     end
 
-    %i(move copy zero getchar getdigit putchar putdigit set add sub).each do |name|
+    %i(move copy zero getchar getdigit putchar putdigit putstr setstr set add sub).each do |name|
       define_method(name) { |*args| @bm.method(name).call(self, *args) }
     end
 
@@ -424,6 +424,8 @@ class BrainMem
       _addsub_const ?+, dst, src.ord
     when Ptr
       copy(dst, src, tmp)
+    else
+      raise "Brainfuck: undefined operation"
     end
   end
 
@@ -457,6 +459,7 @@ class BrainMem
   def add!(dst, src)
     case src
     when Integer
+      return sub!(dst, -src) if src < 0
       @bf.comment "#{dst} += #{src}" if @verbose
       _addsub_const ?+, dst, src
     when String
@@ -465,6 +468,8 @@ class BrainMem
     when Ptr
       @bf.comment "#{dst} += move(#{src})" if @verbose
       _add(dst, src)
+    else
+      raise "Brainfuck: undefined operation"
     end
   end
 
@@ -491,6 +496,7 @@ class BrainMem
   def sub!(dst, src)
     case src
     when Integer
+      return add!(dst, -src) if src < 0
       @bf.comment "#{dst} -= #{src}" if @verbose
       _addsub_const ?-, dst, src
     when String
@@ -499,6 +505,8 @@ class BrainMem
     when Ptr
       @bf.comment "#{dst} -= move(#{src})" if @verbose
       _sub(dst, src)
+    else
+      raise "Brainfuck: undefined operation"
     end
   end
 
@@ -564,6 +572,22 @@ class BrainMem
     end
   end
 
+  def setstr(dst, src, len = nil)
+    case src
+    when String
+      len ||= src.size
+      len = [len, dst.size].min
+      return if len == 0
+      dst.set src[0]
+      (len - 1).times do |i|
+        dst[i].copy_to dst[i + 1]
+        dst[i + 1].add src[i + 1].ord - src[i].ord
+      end
+    else
+      raise "Brainfuck: undefined operation"
+    end
+  end
+
   def getchar(dst)
     @bf.comment "#{dst} = getchar" if @verbose
     go_to dst
@@ -599,6 +623,8 @@ class BrainMem
     when Ptr
       @bf.comment "#{dst} *= move(#{src})" if @verbose
       _mul(dst, src)
+    else
+      raise "Brainfuck: undefined operation"
     end
   end
 
