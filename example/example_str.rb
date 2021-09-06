@@ -5,11 +5,8 @@ b = BrainMem.new
 x = b.alloc(5)
 
 # "hello" を代入
-"hello".each_char.with_index do |c, i|
-  x[i].set c
-end
+x.setstr "hello"
 
-# 出力
 b.putstr x
 
 # コードの生成
