@@ -286,7 +286,7 @@ class BrainMem
       %i(move copy zero set) +
       %i(getchar getdigit putchar putdigit putstr getstr setstr) +
       %i(add sub mul) +
-      %i(eq) +
+      %i(eq lt le gt ge) +
       %i(not) +
       %i(if_zero if_nonzero while_zero while_nonzero times)
     ).each do |name|
@@ -606,6 +606,17 @@ class BrainMem
     end
   end
 
+  # -- 多倍長整数 --
+  # リトルエンディアン
+  
+  # def add_num(dst, src, len, verbose = @verbose)
+  #   @bf.comment "#{dst} += #{src}" if verbose
+  #   (len - 1).times do |i|
+  #     _add dst[i], src[i]
+
+  #   end
+  # end
+
   # -- 比較 --
 
   def eq(dst, src_l, src_r)
@@ -633,27 +644,62 @@ class BrainMem
     end
   end
 
-  def lt(dst, src_l, src_r)
-    @bf.comment "dst = src_l < src_r" if @verbose
+  def lt(dst, src_l, src_r, verbose = @verbose)
+    @bf.comment "#{dst} = #{src_l} < #{src_r}" if verbose
     _lt(dst, src_l, src_r)
   end
 
-  # FIXME
   def _lt(dst, src_l, src_r)
-    return alloc_tmp { |tmp| set tmp, src_l; lt dst, tmp, src_r } if src_l.is_a? Integer
-    return alloc_tmp { |tmp| set tmp, src_r; lt dst, src_l, tmp } if src_r.is_a? Integer
+    return alloc_tmp { |tmp| _set tmp, src_l; _lt dst, tmp, src_r } if src_l.is_a? Integer
+    return alloc_tmp { |tmp| _set tmp, src_r; _lt dst, src_l, tmp } if src_r.is_a? Integer
     alloc_tmps(2) do |a, b|
       _copy a, src_l
       _copy b, src_r
       _zero dst
       _times(b) do
         _if_zero(a) do
-          _addsub_const ?+, dst, 1
+          _add_const dst, 1
         end
-        _addsub_const ?+, a, 1
+        _add_const a, -1
       end
       _zero a
+      _zero b
     end
+  end
+
+  def le(dst, src_l, src_r, verbose = @verbose)
+    @bf.comment "#{dst} = #{src_l} <= #{src_r}" if verbose
+    _le(dst, src_l, src_r)
+  end
+
+  def _le(dst, src_l, src_r)
+    return alloc_tmp { |tmp| _set tmp, src_l; _le dst, tmp, src_r } if src_l.is_a? Integer
+    return alloc_tmp { |tmp| _set tmp, src_r; _le dst, src_l, tmp } if src_r.is_a? Integer
+    alloc_tmps(2) do |a, b|
+      _copy a, src_l
+      _copy b, src_r
+      _zero dst
+      _times(b) do
+        _add_const a, -1
+        _if_zero(a) do
+          _add_const dst, 1
+        end
+      end
+      _zero a
+      _zero b
+    end
+  end
+
+  def ge(dst, src_l, src_r, verbose = @verbose)
+    @bf.comment "#{dst} = #{src_l} >= #{src_r}"
+    _lt dst, src_l, src_r
+    self.not dst, false
+  end
+
+  def gt(dst, src_l, src_r, verbose = @verbose)
+    @bf.comment "#{dst} = #{src_l} > #{src_r}"
+    _le dst, src_l, src_r
+    self.not dst, false
   end
 
   # -- 論理演算 --
