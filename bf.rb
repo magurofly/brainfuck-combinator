@@ -270,7 +270,7 @@ class BrainMem
       @bm.copy(dst, self, tmp)
     end
 
-    %i(move copy zero getchar getdigit putchar putdigit putstr setstr set add sub).each do |name|
+    %i(move copy zero getchar getdigit putchar putdigit putstr getstr setstr set add sub).each do |name|
       define_method(name) { |*args| @bm.method(name).call(self, *args) }
     end
 
@@ -706,17 +706,23 @@ class BrainMem
       len ||= 1
     end
 
+    @bf.comment "putstr #{src}" if @verbose
+
     len.times do |i|
       go_to src, i
       @bf << ?.
     end
   end
 
-  def setstr(dst, src, len = nil)
-    _setstr(dst, src, len, @verbose)
+  def getstr(dst, len = nil, verbose = @verbose)
+    len ||= dst.size
+    @bf.comment "#{dst[0, len]} = getstr" if verbose
+    len.times do |i|
+      getchar dst[i], false
+    end
   end
 
-  def _setstr(dst, src, len = nil, verbose = false)
+  def setstr(dst, src, len = nil, verbose = @verbose)
     case src
     when String, Array
       len ||= [dst.size, src.size].min
@@ -729,14 +735,14 @@ class BrainMem
     end
   end
 
-  def getchar(dst)
-    @bf.comment "#{dst} = getchar" if @verbose
+  def getchar(dst, verbose = @verbose)
+    @bf.comment "#{dst} = getchar" if verbose
     go_to dst
     @bf << ?,
   end
 
-  def getdigit(dst)
-    @bf.comment "#{dst} = getdigit" if @verbose
+  def getdigit(dst, verbose = @verbose)
+    @bf.comment "#{dst} = getdigit" if verbose
     go_to dst
     @bf << ?,
     _add_const dst, -?0.ord
