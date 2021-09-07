@@ -285,7 +285,7 @@ class BrainMem
     (
       %i(move copy zero set) +
       %i(getchar getdigit putchar putdigit putstr getstr setstr) +
-      %i(add sub) +
+      %i(add sub mul) +
       %i(eq) +
       %i(not) +
       %i(if_zero if_nonzero while_zero while_nonzero times)
