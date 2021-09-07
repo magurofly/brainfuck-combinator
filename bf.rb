@@ -192,13 +192,15 @@ class Brainfuck
     def dump(out = STDERR)
       program = "\e[m#{@program[0, @pc]}\e[31m@\e[m#{@program[@pc..-1]}".lines.join("          \e[31m|\e[m")
       input = "\e[m#{@read}".lines.join("          \e[31m|\e[m")
-      output = @output.lines.join("          \e[31m|\e[m")
+      output = @output
+      # output = output.gsub(/[\x00-\x19\x7f-\xff]/) { |c| "\e[32m\\x%02x\e[m" % c.ord }
+      output = output.lines.join("          \e[31m|\e[m")
       out.puts <<-EOT
 program:  \e[31m{#{program}\e[31m}\e[m
 input:    \e[31m{#{input}\e[31m}\e[m
 output:   \e[31m{\e[m#{output}\e[31m}\e[m
 info:
-  step = #{@step}
+  step = #{@step}, memory = #{@pointer_max + 1}, length = #{@program.size}
 memory:
       EOT
       memory_rows = (0 ... (@pointer_max + 1 + 15) / 16).map { |i| ["    %02X: " % (i * 16), @mem[i * 16, 16].map { |d| "%02X" % d }] }
@@ -286,27 +288,11 @@ class BrainMem
       %i(add sub) +
       %i(eq) +
       %i(not) +
-      %i(if_zero while_zero)
+      %i(if_zero if_nonzero while_zero while_nonzero times)
     ).each do |name|
       define_method(name, & ->(*args, &block) {
         @bm.method(name).call(self, *args, &block)
       })
-    end
-
-    def times(&block)
-      @bm.times(self, &block)
-    end
-
-    def if_nonzero(&block)
-      @bm.if_nonzero(self, &block)
-    end
-
-    # def if_zero(&block)
-    #   @bm.if_zero(self, &block)
-    # end
-
-    def while_nonzero(&block)
-      @bm.while_nonzero(self, &block)
     end
   end
 
@@ -623,7 +609,7 @@ class BrainMem
   # -- 比較 --
 
   def eq(dst, src_l, src_r)
-    @bf.comment "#{dst} = #{src_l} == #{src_r}" if @verbose
+    @bf.comment "#{dst} = #{src_l.inspect} == #{src_r.inspect}" if @verbose
     _eq(dst, src_l, src_r)
   end
 
@@ -641,6 +627,7 @@ class BrainMem
         _copy dst, src_l
       end
       _sub dst, src_r
+      self.not dst, false
     else
       raise "Brainfuck: undefined operation"
     end
@@ -792,22 +779,45 @@ class BrainMem
 
   # -- 入出力 --
 
-  def puts(src)
-    @bf.comment "puts #{src.inspect}" if @verbose
-    alloc_tmp(src.size) do |tmp|
-      setstr tmp, src, false
-      putstr tmp, false
+  # 文字列を出力する
+  # 文字列にはヌル文字が含まれてはいけない
+  def print(src, verbose = @verbose)
+    @bf.comment "print #{src.inspect}" if verbose
+    alloc_tmp(src.size + 1) do |tmp|
+      setstr tmp, src, nil, false
+      _zero tmp[src.size]
+
+      # putchar until 0
+      go_to tmp
+      @bf << "[.>]"
+      @pointer += src.size
+
+      # clear mem
+      go_to tmp
+      @bf << "[[-]>]"
+      @pointer += src.size
     end
   end
 
-  def putchar(src)
-    @bf.comment "putchar #{src}" if @verbose
+  # 文字列を出力して改行する
+  def puts(src, verbose = @verbose)
+    @bf.comment "puts #{src.inspect}" if verbose
+    print src, false
+    alloc_tmp do |tmp|
+      _set tmp, ?\n
+      putchar tmp, false
+      _zero tmp
+    end
+  end
+
+  def putchar(src, verbose = @verbose)
+    @bf.comment "putchar #{src}" if verbose
     go_to src
     @bf << ?.
   end
 
-  def putdigit(src)
-    @bf.comment "putdigit #{src}" if @verbose
+  def putdigit(src, verbose = @verbose)
+    @bf.comment "putdigit #{src}" if verbose
     _add_const src, ?0.ord
     go_to src
     @bf << ?.
