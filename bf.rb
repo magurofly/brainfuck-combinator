@@ -3,10 +3,10 @@
 require "stringio"
 
 class Brainfuck
-  MEM = 10000
-  DEFAULT_LIMIT = 100000
+  MEM = 1000
+  DEFAULT_LIMIT = 1000000
 
-  attr_accessor :program, :indent
+  attr_accessor :program, :indent, :vacant
 
   def initialize
     @program = ""
@@ -25,7 +25,9 @@ class Brainfuck
 
   def make(input = STDIN)
     input = StringIO.new(input) if input.is_a? String
-    Env.new(@program, input)
+    env = Env.new(@program, input)
+    env.builder = self
+    env
   end
 
   def run(input = STDIN, count = DEFAULT_LIMIT)
@@ -85,7 +87,7 @@ class Brainfuck
 
   class Env
   
-    attr_accessor :program, :pc, :input, :read, :mem, :ptr, :output
+    attr_accessor :program, :pc, :input, :read, :mem, :ptr, :output, :builder
   
     def initialize(program, input)
       @program = program
@@ -186,41 +188,52 @@ class Brainfuck
           end
         end
         @pc += 1
+      when ?@
+        dump(STDERR, { hide_program: true })
+        @pc += 1
       else
         @pc += 1
       end
       true
     end
   
-    def dump(out = STDERR)
+    def dump(out = STDERR, options = {})
       program = "\e[m#{@program[0, @pc]}\e[31m@\e[m#{@program[@pc..-1]}".lines.join("          \e[31m|\e[m")
       input = "\e[m#{@read}".lines.join("          \e[31m|\e[m")
       output = @output
       outlen = output.size
       # output = output.gsub(/[\x00-\x19\x7f-\xff]/) { |c| "\e[32m\\x%02x\e[m" % c.ord }
       output = output.lines.join("          \e[31m|\e[m")
+      out.puts "program:  \e[31m{#{program}\e[31m}\e[m" unless options[:hide_program]
       out.puts <<-EOT
-program:  \e[31m{#{program}\e[31m}\e[m
 input:    \e[31m{#{input}\e[31m}\e[m
 output:   \e[31m{\e[m#{output}\e[31m}\e[m
 info:
-  step = #{@step}, memory = #{@pointer_max + 1}, length = #{@program.size}, output = #{outlen}
+  step = #{@step}, memory = #{@pointer_max + 1}, length = #{@program.size}, output = #{outlen}, pc = #{@pc}
 memory:
       EOT
       memory_rows = (0 ... (@pointer_max + 1 + 15) / 16).map { |i| ["    %02X: " % (i * 16), @mem[i * 16, 16].map { |d| "%02X" % d }] }
+      memory_rows.each_with_index do |(_, row), i|
+        row.each_with_index do |s, j|
+          if @builder and @builder.vacant and not @builder.vacant[i << 4 | j]
+            s[0, 0] = "\e[42m"
+            s << "\e[m"
+          end
+        end
+      end
       memrow = memory_rows[@pointer / 16][1]
       memrow[@pointer % 16] = "\e[44;37m" + memrow[@pointer % 16]
       memrow[@pointer % 16] += "\e[m"
       out.puts memory_rows.map { |prefix, mem| prefix + mem.join(" ") }
     end
   
-    def dump_run(interval = 0.1, wait = STDIN, out = STDERR)
+    def dump_run(interval = 0.1, options = {}, wait = STDIN, out = STDERR)
       out.puts "Enter to stop"
       running = true
       t = Thread.fork do
         while running
           break unless step
-          dump
+          dump out, options
           sleep interval if interval
         end
       end
@@ -236,6 +249,7 @@ class BrainMem
   def initialize(verbose = false)
     @bf = Brainfuck.new
     @mem = [true] * 10000
+    @bf.vacant = @mem
     @pointer = 0
     @verbose = verbose
   end
@@ -290,7 +304,7 @@ class BrainMem
       %i(move copy zero set) +
       %i(getchar getdigit putchar putdigit putstr getstr setstr gets puts print) +
       %i(add sub mul) +
-      %i(eq lt le gt ge) +
+      %i(eq ne lt le gt ge) +
       %i(not) +
       %i(if_zero if_nonzero while_zero while_nonzero times)
     ).each do |name|
@@ -545,10 +559,10 @@ class BrainMem
     when Integer
       return add!(dst, -src) if src < 0
       @bf.comment "#{dst} -= #{src}" if @verbose
-      _addsub_const ?-, dst, src
+      _add_const dst, -src
     when String
       @bf.comment "#{dst} -= #{src.inspect}.ord" if @verbose
-      _addsub_const ?-, dst, src
+      _add_const dst, -src
     when Ptr
       @bf.comment "#{dst} -= move(#{src})" if @verbose
       _sub(dst, src)
@@ -564,7 +578,7 @@ class BrainMem
       _copy(tmp, src)
       _sub(dst, tmp)
     else
-      add!(dst, src)
+      sub!(dst, src)
     end
   end
 
@@ -607,6 +621,21 @@ class BrainMem
     end
   end
 
+  # dst_mod, dst_div = dst_mod % src, dst_mod / src
+  def divmod(dst_mod, dst_div, src)
+    @bf.comment "#{dst_mod}, #{dst_div} = #{dst_mod} % #{src}, #{dst_mod} / #{src}" if @verbose
+    _zero dst_div
+    alloc_tmp do |tmp|
+      _le tmp, src, dst_mod
+      _while_nonzero(tmp) do
+        _add_const dst_div, 1
+        _sub dst_mod, src
+        _le tmp, src, dst_mod
+      end
+      _zero tmp
+    end
+  end
+
   # -- 多倍長整数 --
   # リトルエンディアン
   
@@ -626,11 +655,21 @@ class BrainMem
   end
 
   def _eq(dst, src_l, src_r)
+    _ne dst, src_l, src_r
+    self.not dst, false
+  end
+
+  def ne(dst, src_l, src_r)
+    @bf.comment "#{dst} = #{src_l.inspect} != #{src_r.inspect}" if @verbose
+    _ne(dst, src_l, src_r)
+  end
+
+  def _ne(dst, src_l, src_r)
     case src_r
     when Integer
-      alloc_tmp { |tmp| _set tmp, src_r; _eq dst, src_l, tmp }
+      alloc_tmp { |tmp| _set tmp, src_r; _ne dst, src_l, tmp }
     when String
-      _eq(dst, src_l, src_r.ord)
+      _ne(dst, src_l, src_r.ord)
     when Ptr
       _zero dst
       if src_l.is_a? Integer
@@ -639,7 +678,6 @@ class BrainMem
         _copy dst, src_l
       end
       _sub dst, src_r
-      self.not dst, false
     else
       raise "Brainfuck: undefined operation"
     end
@@ -692,13 +730,13 @@ class BrainMem
   end
 
   def ge(dst, src_l, src_r, verbose = @verbose)
-    @bf.comment "#{dst} = #{src_l} >= #{src_r}"
+    @bf.comment "#{dst} = #{src_l} >= #{src_r}" if verbose
     _lt dst, src_l, src_r
     self.not dst, false
   end
 
   def gt(dst, src_l, src_r, verbose = @verbose)
-    @bf.comment "#{dst} = #{src_l} > #{src_r}"
+    @bf.comment "#{dst} = #{src_l} > #{src_r}" if verbose
     _le dst, src_l, src_r
     self.not dst, false
   end
@@ -833,6 +871,9 @@ class BrainMem
     alloc_tmp(src.size + 2) do |tmp|
       # tmpの両端は0にする
       setstr tmp[1, src.size], src, nil, false
+
+      # @bf << ?@ #
+
       _zero tmp[0]
       _zero tmp[1 + src.size]
 
@@ -864,6 +905,8 @@ class BrainMem
     alloc_tmps(3) do |cont, tmp1, tmp2|
       _set cont, 1
       len.times do |i|
+        go_to cont
+        # @bf << ?@
         _if_nonzero(cont) do
           getchar dst[i], false
           _eq tmp1, dst[i], ?\n
