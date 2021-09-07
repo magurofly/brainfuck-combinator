@@ -270,7 +270,7 @@ class BrainMem
       @bm.copy(dst, self, tmp)
     end
 
-    %i(move copy zero getchar getdigit putchar putdigit putstr getstr setstr set add sub).each do |name|
+    %i(move copy zero getchar getdigit putchar putdigit putstr getstr setstr set add sub eq).each do |name|
       define_method(name) { |*args| @bm.method(name).call(self, *args) }
     end
 
@@ -283,7 +283,7 @@ class BrainMem
     end
 
     def if_zero(&block)
-      @bm.if_nonzero(self, &block)
+      @bm.if_zero(self, &block)
     end
   end
 
@@ -599,11 +599,36 @@ class BrainMem
 
   # -- 比較 --
 
+  def eq(dst, src_l, src_r)
+    @bf.comment "#{dst} = #{src_l} == #{src_r}" if @verbose
+    _eq(dst, src_l, src_r)
+  end
+
+  def _eq(dst, src_l, src_r)
+    case src_r
+    when Integer
+      alloc_tmp { |tmp| _set tmp, src_r; _eq dst, src_l, tmp }
+    when String
+      _eq(dst, src_l, src_r.ord)
+    when Ptr
+      _zero dst
+      if src_l.is_a? Integer
+        _set dst, src_l
+      else
+        _copy dst, src_l
+      end
+      _sub dst, src_r
+    else
+      raise "Brainfuck: undefined operation"
+    end
+  end
+
   def lt(dst, src_l, src_r)
     @bf.comment "dst = src_l < src_r" if @verbose
     _lt(dst, src_l, src_r)
   end
 
+  # FIXME
   def _lt(dst, src_l, src_r)
     return alloc_tmp { |tmp| set tmp, src_l; lt dst, tmp, src_r } if src_l.is_a? Integer
     return alloc_tmp { |tmp| set tmp, src_r; lt dst, src_l, tmp } if src_r.is_a? Integer
