@@ -93,22 +93,22 @@ class Brainfuck
       @pointer = 0
       @pointer_max = 0
       @output = ""
+      @step = 0
     end
   
     def run(count = DEFAULT_LIMIT)
-      i = 0
-      while i < count
+      while @step < count
         break unless step
-        i += 1
       end
   
-      if i >= count
+      if @step >= count
         STDERR.puts "Brainfuck: program steps exceeded #{count}"
       end
     end
   
     def step
       return false if @pc >= @program.size
+      @step += 1
       case @program[@pc]
       when ?+
         @mem[@pointer] += 1
@@ -197,6 +197,8 @@ class Brainfuck
 program:  \e[31m{#{program}\e[31m}\e[m
 input:    \e[31m{#{input}\e[31m}\e[m
 output:   \e[31m{\e[m#{output}\e[31m}\e[m
+info:
+  step = #{@step}
 memory:
       EOT
       memory_rows = (0 ... (@pointer_max + 1 + 15) / 16).map { |i| ["    %02X: " % (i * 16), @mem[i * 16, 16].map { |d| "%02X" % d }] }
@@ -232,6 +234,10 @@ class BrainMem
     @verbose = verbose
   end
 
+  def inspect
+    "#<BrainMem:0x%016x @pointer=%d @mem.used=%d>" % [object_id * 2, @pointer, @mem.count(false)]
+  end
+
   def exec(&block)
     self.instance_exec(&block)
   end
@@ -248,6 +254,10 @@ class BrainMem
       else
         "$#{@ptr}"
       end
+    end
+
+    def inspect
+      to_s
     end
 
     def free
@@ -270,8 +280,17 @@ class BrainMem
       @bm.copy(dst, self, tmp)
     end
 
-    %i(move copy zero getchar getdigit putchar putdigit putstr getstr setstr set add sub eq).each do |name|
-      define_method(name) { |*args| @bm.method(name).call(self, *args) }
+    (
+      %i(move copy zero set) +
+      %i(getchar getdigit putchar putdigit putstr getstr setstr) +
+      %i(add sub) +
+      %i(eq) +
+      %i(not) +
+      %i(if_zero while_zero)
+    ).each do |name|
+      define_method(name, & ->(*args, &block) {
+        @bm.method(name).call(self, *args, &block)
+      })
     end
 
     def times(&block)
@@ -282,8 +301,12 @@ class BrainMem
       @bm.if_nonzero(self, &block)
     end
 
-    def if_zero(&block)
-      @bm.if_zero(self, &block)
+    # def if_zero(&block)
+    #   @bm.if_zero(self, &block)
+    # end
+
+    def while_nonzero(&block)
+      @bm.while_nonzero(self, &block)
     end
   end
 
@@ -646,6 +669,22 @@ class BrainMem
     end
   end
 
+  # -- 論理演算 --
+
+  def not(dst, verbose = @verbose)
+    @bf.comment "#{dst} = not #{dst}" if verbose
+    alloc_tmp do |tmp|
+      _add_const tmp, 1
+      go_to dst
+      @bf << "["
+        _add_const tmp, -1
+        _zero dst
+        go_to dst
+      @bf << "]"
+      _move dst, tmp
+    end
+  end
+
   # -- 制御 --
 
   def _times(src)
@@ -670,6 +709,50 @@ class BrainMem
     @bf.comment "for #{tmp} = #{src} downto 1:"
     _copy tmp, src
     _times(tmp, &block)
+  end
+
+  def while_nonzero(src, &block)
+    @bf.comment "while #{src} != 0:" if @verbose
+    _while_nonzero(src, &block)
+  end
+
+  def _while_nonzero(src)
+    alloc_tmp do |tmp|
+      _copy tmp, src
+      go_to tmp
+      @bf << "["
+        @bf.indent += 1
+        @bf.newline
+        yield
+        @bf.indent -= 1
+        @bf.newline
+        _copy tmp, src
+        go_to tmp
+      @bf << "]"
+    end
+  end
+
+  def while_zero(src, &block)
+    @bf.comment "while #{src} == 0:" if @verbose
+    _while_zero(src, &block)
+  end
+
+  def _while_zero(src)
+    alloc_tmp do |tmp|
+      _copy tmp, src
+      self.not tmp
+      go_to tmp
+      @bf << "["
+        @bf.indent += 1
+        @bf.newline
+        yield
+        @bf.indent -= 1
+        @bf.newline
+        _copy tmp, src
+        self.not tmp
+        go_to tmp
+      @bf << "]"
+    end
   end
 
   def if_nonzero(src, &block)
@@ -700,15 +783,22 @@ class BrainMem
 
   def _if_zero(src, &block)
     alloc_tmp do |tmp|
-      _addsub_const ?+, tmp, 1
-      _if_nonzero(src) do
-        _addsub_const ?-, tmp, 1
-      end
-      _if_nonzero(tmp, &block)
+      _copy tmp, src
+      self.not tmp, false
+      _if_nonzero tmp, &block
+      _zero tmp
     end
   end
 
   # -- 入出力 --
+
+  def puts(src)
+    @bf.comment "puts #{src.inspect}" if @verbose
+    alloc_tmp(src.size) do |tmp|
+      setstr tmp, src, false
+      putstr tmp, false
+    end
+  end
 
   def putchar(src)
     @bf.comment "putchar #{src}" if @verbose
@@ -724,14 +814,14 @@ class BrainMem
     _add_const src, -?0.ord
   end
 
-  def putstr(src, len = nil)
+  def putstr(src, len = nil, verbose = @verbose)
     if src.is_a? Ptr
       len ||= src.size
     else
       len ||= 1
     end
 
-    @bf.comment "putstr #{src}" if @verbose
+    @bf.comment "putstr #{src}" if verbose
 
     len.times do |i|
       go_to src, i
