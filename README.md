@@ -1,5 +1,7 @@
 # brainfuck-combinator
 
+Rubyでいろんなメソッドを呼ぶと、Brainfuckのコードを出力します
+
 ## 使い方
 
 ```bash
@@ -8,6 +10,10 @@ irb> b = BrainMem.new(false) # trueだと詳細な出力
 irb> # コードを書く
 irb> puts b.bf.to_s # Brainfuckコードを出力
 ```
+
+### 制約
+
+`BrainMem#bf << code` で直接Brainfuckコードを追加できますが、このコードを実行した後に`BrainMem#pointer`が正しいポインタの位置を指しているようにしてください。
 
 ## 機能
 
