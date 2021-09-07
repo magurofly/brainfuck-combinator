@@ -1,5 +1,7 @@
 # coding: UTF-8
 
+require "stringio"
+
 class Brainfuck
   MEM = 10000
   DEFAULT_LIMIT = 100000
@@ -21,17 +23,18 @@ class Brainfuck
     @program << str
   end
 
-  def make(input = "")
+  def make(input = STDIN)
+    input = StringIO.new(input) if input.is_a? String
     Env.new(@program, input)
   end
 
-  def run(input = "", count = DEFAULT_LIMIT)
+  def run(input = STDIN, count = DEFAULT_LIMIT)
     env = make(input)
     env.run(count)
     env.output
   end
 
-  def run_dump(input = "", count = DEFAULT_LIMIT)
+  def run_dump(input = STDIN, count = DEFAULT_LIMIT)
     env = make(input)
     env.run(count)
     env.dump
@@ -85,7 +88,7 @@ class Brainfuck
       @program = program
       @pc = 0
       @input = input
-      @read = 0
+      @read = ""
       @mem = [0] * MEM
       @pointer = 0
       @pointer_max = 0
@@ -128,11 +131,18 @@ class Brainfuck
         @output << @mem[@pointer].chr
         @pc += 1
       when ?,
-        if @read < @input.size
-          @mem[@pointer] = @input[@read].ord
-          @read += 1
-        else
+        # if @read < @input.size
+        #   @mem[@pointer] = @input[@read].ord
+        #   @read += 1
+        # else
+        #   @mem[@pointer] = 255
+        # end
+        if @input.eof?
           @mem[@pointer] = 255
+        else
+          c = @input.read(1)
+          @read << c
+          @mem[@pointer] = c.ord
         end
         @pc += 1
       when ?[
@@ -181,7 +191,7 @@ class Brainfuck
   
     def dump(out = STDERR)
       program = "\e[m#{@program[0, @pc]}\e[31m@\e[m#{@program[@pc..-1]}".lines.join("          \e[31m|\e[m")
-      input = "\e[m#{@input[0, @read]}\e[31m@\e[m#{@input[@read..-1]}".lines.join("          \e[31m|\e[m")
+      input = "\e[m#{@read}".lines.join("          \e[31m|\e[m")
       output = @output.lines.join("          \e[31m|\e[m")
       out.puts <<-EOT
 program:  \e[31m{#{program}\e[31m}\e[m
@@ -244,9 +254,12 @@ class BrainMem
       @bm.free(self)
     end
 
-    def [](i)
-      raise "Brainfuck: index out of range" unless (0 ... @size) === i
-      Ptr.new(@ptr + i, @size - i, @bm)
+    def [](i, len = 1)
+      case i
+      when Integer
+        raise "Brainfuck: index out of range" unless (0 ... @size) === i
+        Ptr.new(@ptr + i, len, @bm)
+      end
     end
 
     def move_to(dst)
@@ -268,7 +281,13 @@ class BrainMem
     def if_nonzero(&block)
       @bm.if_nonzero(self, &block)
     end
+
+    def if_zero(&block)
+      @bm.if_nonzero(self, &block)
+    end
   end
+
+  # -- メモリ操作 --
 
   def alloc(size = 1, base = @pointer)
     ptr = find_nearest_free(size, base)
@@ -364,6 +383,31 @@ class BrainMem
   end
 
   def _copy(dst, src, tmp = nil)
+    if dst.is_a? Ptr and dst.size > 1
+      case src
+      when Integer
+        _set(dst[0], src)
+        (dst.size - 1).times do |i|
+          _copy(dst[i + 1], dst[i])
+        end
+      when String
+        _copy dst, src.bytes, tmp
+      when Array
+        len = src.size
+        _set dst[0], src[0]
+        (dst.size - 1).times do |i|
+          _copy dst[i + 1], dst[i]
+          _add_const dst[i + 1], src[(i + 1) % len].ord - src[i % len].ord
+        end
+      when Ptr
+        len = [len, dst.size, src.size].min
+        len.times do |i|
+          _copy dst[i], src[i]
+        end
+      end
+      return
+    end
+
     return alloc_tmp { |ptr| _copy(dst, src, ptr) } unless tmp
     _zero(dst)
     go_to src
@@ -378,16 +422,45 @@ class BrainMem
     _move(src, tmp)
   end
 
+  def _add_const(dst, src)
+    if src < 0
+      _addsub_const ?-, dst, -src
+    else
+      _addsub_const ?+, dst, src
+    end
+  end
+
   def set(dst, src, tmp = nil)
     case src
     when Integer
       @bf.comment "#{dst} = #{src}" if @verbose
-      _addsub_const ?+, dst, src
+      _add_const dst, src
     when String
       @bf.comment "#{dst} = #{src.inspect}.ord" if @verbose
-      _addsub_const ?+, dst, src.ord
+      _add_const dst, src.ord
     when Ptr
       copy(dst, src, tmp)
+    else
+      raise "Brainfuck: undefined operation"
+    end
+  end
+
+  # -- 計算 --
+
+  def _set(dst, val)
+    case val
+    when Integer
+      _zero dst
+      if val > 0
+        _addsub_const ?+, dst, val
+      elsif val < 0
+        _addsub_const ?-, dst, -val
+      end
+    when String
+      # TODO: range set
+      _set dst, val.ord
+    when Ptr
+      _copy dst, val
     else
       raise "Brainfuck: undefined operation"
     end
@@ -420,6 +493,15 @@ class BrainMem
     @bf << "]"
   end
 
+  def _sub(dst, src, scale = 1)
+    go_to src
+    @bf << "[-"
+      go_to dst
+      @bf << ?- * scale
+      go_to src
+    @bf << "]"
+  end
+
   def add!(dst, src)
     case src
     when Integer
@@ -448,15 +530,6 @@ class BrainMem
     end
   end
 
-  def _sub(dst, src, scale = 1)
-    go_to src
-    @bf << "[-"
-      go_to dst
-      @bf << ?- * scale
-      go_to src
-    @bf << "]"
-  end
-
   def sub!(dst, src)
     case src
     when Integer
@@ -483,86 +556,6 @@ class BrainMem
     else
       add!(dst, src)
     end
-  end
-
-  def _times(src)
-    go_to src
-    @bf << "["
-      @bf.indent += 1
-      @bf.newline
-      yield
-      @bf.indent -= 1
-      @bf.newline
-      go_to src
-    @bf << "-]"
-  end
-
-  def times!(src, &block)
-    @bf.comment "for #{src} = #{src} downto 1:"
-    _times(src, &block)
-  end
-
-  def times(src, tmp = nil, &block)
-    return alloc_tmp { |ptr| times(src, ptr, &block) } unless tmp
-    @bf.comment "for #{tmp} = #{src} downto 1:"
-    copy tmp, src
-    _times(tmp, &block)
-  end
-
-  def putchar(src)
-    @bf.comment "putchar #{src}" if @verbose
-    go_to src
-    @bf << ?.
-  end
-
-  def putdigit(src)
-    @bf.comment "putdigit #{src}" if @verbose
-    _addsub_const ?+, src, ?0.ord
-    go_to src
-    @bf << ?.
-    _addsub_const ?-, src, ?0.ord
-  end
-
-  def putstr(src, len = nil)
-    if src.is_a? Ptr
-      len ||= src.size
-    else
-      len ||= 1
-    end
-
-    len.times do |i|
-      go_to src, i
-      @bf << ?.
-    end
-  end
-
-  def setstr(dst, src, len = nil)
-    case src
-    when String
-      len ||= src.size
-      len = [len, dst.size].min
-      return if len == 0
-      dst.set src[0]
-      (len - 1).times do |i|
-        dst[i].copy_to dst[i + 1]
-        dst[i + 1].add src[i + 1].ord - src[i].ord
-      end
-    else
-      raise "Brainfuck: undefined operation"
-    end
-  end
-
-  def getchar(dst)
-    @bf.comment "#{dst} = getchar" if @verbose
-    go_to dst
-    @bf << ?,
-  end
-
-  def getdigit(dst)
-    @bf.comment "#{dst} = getdigit" if @verbose
-    go_to dst
-    @bf << ?,
-    _addsub_const ?-, dst, ?0
   end
 
   def _mul(dst, src)
@@ -604,8 +597,62 @@ class BrainMem
     end
   end
 
-  def if_nonzero(src)
+  # -- 比較 --
+
+  def lt(dst, src_l, src_r)
+    @bf.comment "dst = src_l < src_r" if @verbose
+    _lt(dst, src_l, src_r)
+  end
+
+  def _lt(dst, src_l, src_r)
+    return alloc_tmp { |tmp| set tmp, src_l; lt dst, tmp, src_r } if src_l.is_a? Integer
+    return alloc_tmp { |tmp| set tmp, src_r; lt dst, src_l, tmp } if src_r.is_a? Integer
+    alloc_tmps(2) do |a, b|
+      _copy a, src_l
+      _copy b, src_r
+      _zero dst
+      _times(b) do
+        _if_zero(a) do
+          _addsub_const ?+, dst, 1
+        end
+        _addsub_const ?+, a, 1
+      end
+      _zero a
+    end
+  end
+
+  # -- 制御 --
+
+  def _times(src)
+    go_to src
+    @bf << "["
+      @bf.indent += 1
+      @bf.newline
+      yield
+      @bf.indent -= 1
+      @bf.newline
+      go_to src
+    @bf << "-]"
+  end
+
+  def times!(src, &block)
+    @bf.comment "for #{src} = #{src} downto 1:"
+    _times(src, &block)
+  end
+
+  def times(src, tmp = nil, &block)
+    return alloc_tmp { |ptr| times(src, ptr, &block) } unless tmp
+    @bf.comment "for #{tmp} = #{src} downto 1:"
+    _copy tmp, src
+    _times(tmp, &block)
+  end
+
+  def if_nonzero(src, &block)
     @bf.comment "if #{src} != 0:" if @verbose
+    _if_nonzero(src, &block)
+  end
+
+  def _if_nonzero(src)
     alloc_tmp do |tmp|
       _copy tmp, src  
       go_to tmp
@@ -619,5 +666,79 @@ class BrainMem
         @bf << "[-]"
       @bf << "]"
     end
+  end
+
+  def if_zero(src, &block)
+    @bf.comment "if #{src} == 0:" if @verbose
+    _if_zero(src, &block)
+  end
+
+  def _if_zero(src, &block)
+    alloc_tmp do |tmp|
+      _addsub_const ?+, tmp, 1
+      _if_nonzero(src) do
+        _addsub_const ?-, tmp, 1
+      end
+      _if_nonzero(tmp, &block)
+    end
+  end
+
+  # -- 入出力 --
+
+  def putchar(src)
+    @bf.comment "putchar #{src}" if @verbose
+    go_to src
+    @bf << ?.
+  end
+
+  def putdigit(src)
+    @bf.comment "putdigit #{src}" if @verbose
+    _add_const src, ?0.ord
+    go_to src
+    @bf << ?.
+    _add_const src, -?0.ord
+  end
+
+  def putstr(src, len = nil)
+    if src.is_a? Ptr
+      len ||= src.size
+    else
+      len ||= 1
+    end
+
+    len.times do |i|
+      go_to src, i
+      @bf << ?.
+    end
+  end
+
+  def setstr(dst, src, len = nil)
+    _setstr(dst, src, len, @verbose)
+  end
+
+  def _setstr(dst, src, len = nil, verbose = false)
+    case src
+    when String, Array
+      len ||= [dst.size, src.size].min
+      @bf.comment "#{dst[0, len]} = #{src[0, len].inspect}" if verbose
+      _copy(dst[0, len], src[0, len])
+    when Ptr
+      len ||= [dst.size, src.size].min
+      @bf.comment "#{dst[0, len]} = #{src[0, len]}" if verbose
+      _copy(dst[0, len], src[0, len])
+    end
+  end
+
+  def getchar(dst)
+    @bf.comment "#{dst} = getchar" if @verbose
+    go_to dst
+    @bf << ?,
+  end
+
+  def getdigit(dst)
+    @bf.comment "#{dst} = getdigit" if @verbose
+    go_to dst
+    @bf << ?,
+    _add_const dst, -?0.ord
   end
 end
