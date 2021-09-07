@@ -39,6 +39,9 @@ class Brainfuck
     env.run(count)
     env.dump
     env.output
+  rescue => e
+    puts e
+    env.dump
   end
 
   def newline
@@ -193,6 +196,7 @@ class Brainfuck
       program = "\e[m#{@program[0, @pc]}\e[31m@\e[m#{@program[@pc..-1]}".lines.join("          \e[31m|\e[m")
       input = "\e[m#{@read}".lines.join("          \e[31m|\e[m")
       output = @output
+      outlen = output.size
       # output = output.gsub(/[\x00-\x19\x7f-\xff]/) { |c| "\e[32m\\x%02x\e[m" % c.ord }
       output = output.lines.join("          \e[31m|\e[m")
       out.puts <<-EOT
@@ -200,7 +204,7 @@ program:  \e[31m{#{program}\e[31m}\e[m
 input:    \e[31m{#{input}\e[31m}\e[m
 output:   \e[31m{\e[m#{output}\e[31m}\e[m
 info:
-  step = #{@step}, memory = #{@pointer_max + 1}, length = #{@program.size}
+  step = #{@step}, memory = #{@pointer_max + 1}, length = #{@program.size}, output = #{outlen}
 memory:
       EOT
       memory_rows = (0 ... (@pointer_max + 1 + 15) / 16).map { |i| ["    %02X: " % (i * 16), @mem[i * 16, 16].map { |d| "%02X" % d }] }
@@ -210,7 +214,7 @@ memory:
       out.puts memory_rows.map { |prefix, mem| prefix + mem.join(" ") }
     end
   
-    def dump_run(wait = STDIN, out = STDERR, interval = 0.1)
+    def dump_run(interval = 0.1, wait = STDIN, out = STDERR)
       out.puts "Enter to stop"
       running = true
       t = Thread.fork do
@@ -284,7 +288,7 @@ class BrainMem
 
     (
       %i(move copy zero set) +
-      %i(getchar getdigit putchar putdigit putstr getstr setstr) +
+      %i(getchar getdigit putchar putdigit putstr getstr setstr gets puts print) +
       %i(add sub mul) +
       %i(eq lt le gt ge) +
       %i(not) +
@@ -392,31 +396,32 @@ class BrainMem
   end
 
   def _copy(dst, src, tmp = nil)
-    if dst.is_a? Ptr and dst.size > 1
-      case src
-      when Integer
-        _set(dst[0], src)
-        (dst.size - 1).times do |i|
-          _copy(dst[i + 1], dst[i])
-        end
-      when String
-        _copy dst, src.bytes, tmp
-      when Array
-        len = src.size
-        _set dst[0], src[0]
-        (dst.size - 1).times do |i|
-          _copy dst[i + 1], dst[i]
-          _add_const dst[i + 1], src[(i + 1) % len].ord - src[i % len].ord
-        end
-      when Ptr
-        len = [len, dst.size, src.size].min
-        len.times do |i|
-          _copy dst[i], src[i]
-        end
+    case src
+    when Integer
+      _set dst, src
+      return
+    when String
+      _copy dst, src.bytes
+      return
+    when Array
+      len = src.size
+      _set dst[0], src[0]
+      (dst.size - 1).times do |i|
+        _copy dst[i + 1], dst[i]
+        _add_const dst[i + 1], src[(i + 1) % len].ord - src[i % len].ord
       end
       return
     end
 
+    if dst.size >= 2
+      len = [dst.size, src.size].min
+      len.times do |i|
+        _copy dst[i], src[i]
+      end
+      return
+    end
+
+    # メモリ間コピー
     return alloc_tmp { |ptr| _copy(dst, src, ptr) } unless tmp
     _zero(dst)
     go_to src
@@ -460,11 +465,7 @@ class BrainMem
     case val
     when Integer
       _zero dst
-      if val > 0
-        _addsub_const ?+, dst, val
-      elsif val < 0
-        _addsub_const ?-, dst, -val
-      end
+      _add_const dst, val
     when String
       # TODO: range set
       _set dst, val.ord
@@ -722,14 +723,14 @@ class BrainMem
 
   def _times(src)
     go_to src
-    @bf << "["
+    @bf << "[-"
       @bf.indent += 1
       @bf.newline
       yield
       @bf.indent -= 1
       @bf.newline
       go_to src
-    @bf << "-]"
+    @bf << "]"
   end
 
   def times!(src, &block)
@@ -826,22 +827,22 @@ class BrainMem
   # -- 入出力 --
 
   # 文字列を出力する
-  # 文字列にはヌル文字が含まれてはいけない
+  # 文字列にヌル文字が含まれている場合、途中まで出力する
   def print(src, verbose = @verbose)
     @bf.comment "print #{src.inspect}" if verbose
-    alloc_tmp(src.size + 1) do |tmp|
-      setstr tmp, src, nil, false
-      _zero tmp[src.size]
+    alloc_tmp(src.size + 2) do |tmp|
+      # tmpの両端は0にする
+      setstr tmp[1, src.size], src, nil, false
+      _zero tmp[0]
+      _zero tmp[1 + src.size]
 
       # putchar until 0
-      go_to tmp
-      @bf << "[.>]"
-      @pointer += src.size
+      go_to tmp[1]
+      @bf << "[.>]" # 0になるまで出力
 
       # clear mem
-      go_to tmp
-      @bf << "[[-]>]"
-      @pointer += src.size
+      @bf << "<[[-]<]" # 一つ戻り、0になるまで戻る
+      @pointer = tmp.ptr
     end
   end
 
@@ -853,6 +854,27 @@ class BrainMem
       _set tmp, ?\n
       putchar tmp, false
       _zero tmp
+    end
+  end
+
+  # 1行入力（改行かEOFで停止）
+  def gets(dst, len = nil, verbose = @verbose)
+    len ||= dst.size
+    @bf.comment "#{dst[0, len]} = gets" if verbose
+    alloc_tmps(3) do |cont, tmp1, tmp2|
+      _set cont, 1
+      len.times do |i|
+        _if_nonzero(cont) do
+          getchar dst[i], false
+          _eq tmp1, dst[i], ?\n
+          _eq tmp2, dst[i], 255
+          _add tmp1, tmp2
+          _if_nonzero(tmp1) do
+            _zero dst[i]
+            _zero cont
+          end
+        end
+      end
     end
   end
 
@@ -898,11 +920,11 @@ class BrainMem
     when String, Array
       len ||= [dst.size, src.size].min
       @bf.comment "#{dst[0, len]} = #{src[0, len].inspect}" if verbose
-      _copy(dst[0, len], src[0, len])
+      _copy dst[0, len], src[0, len]
     when Ptr
       len ||= [dst.size, src.size].min
       @bf.comment "#{dst[0, len]} = #{src[0, len]}" if verbose
-      _copy(dst[0, len], src[0, len])
+      _copy dst[0, len], src[0, len]
     end
   end
 
