@@ -4,16 +4,21 @@ bm = BrainMem.new(true)
 
 bm.exec do
 
-  x = alloc(6)
-  x.setstr "hello\n"
+  x = alloc(5)
+  tmp = alloc
   y = alloc
+
+  x.getstr
+  tmp.getchar # 改行を読み捨て
   y.getdigit
   y.times do
     x.putstr
-    x[0].add 1
   end
 
 end
 
-# コードの生成
+# 実行
 bm.bf.run_dump
+
+# コード生成
+puts bm.bf.to_s
